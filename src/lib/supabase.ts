@@ -45,8 +45,13 @@ const STORAGE_DONATIONS_KEY = 'paineis_luz_doacoes_v2';
 const STORAGE_CONFIG_KEY = 'paineis_luz_config_v2';
 
 // Helper to clear local test/demo donations
-export function clearLocalDemoDonations(): void {
+export async function clearLocalDemoDonations(): Promise<void> {
   localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify([]));
+  try {
+    await fetch('/api/donations/clear', { method: 'POST' });
+  } catch (e) {
+    console.warn('API clear error:', e);
+  }
   notifyLocalUpdate('donation', { cleared: true });
 }
 
@@ -75,6 +80,19 @@ if (broadcastChannel) {
 // ================= DONATIONS API =================
 
 export async function fetchDonations(): Promise<Donation[]> {
+  try {
+    const res = await fetch('/api/donations');
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify(data));
+        return data as Donation[];
+      }
+    }
+  } catch (err) {
+    console.warn('API fetch donations fallback:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -83,9 +101,9 @@ export async function fetchDonations(): Promise<Donation[]> {
         .order('created_at', { ascending: false });
 
       if (!error && data) {
+        localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify(data));
         return data as Donation[];
       }
-      console.warn('Supabase fetch donations error, using local fallback:', error);
     } catch (err) {
       console.warn('Supabase fetch exception:', err);
     }
@@ -100,34 +118,37 @@ export async function fetchDonations(): Promise<Donation[]> {
       console.error('Error parsing stored donations', e);
     }
   }
-  // Initialize with initial demo donations
-  localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify(INITIAL_DEMO_DONATIONS));
   return INITIAL_DEMO_DONATIONS;
 }
 
 export async function insertDonation(donation: Omit<Donation, 'id' | 'created_at'>): Promise<Donation> {
-  const newDonation: Donation = {
-    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `don-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+  const payload = {
     valor: Number(donation.valor),
     doador: donation.doador.trim(),
     descricao: donation.descricao?.trim() || '',
     status: donation.status || 'pago',
-    created_at: new Date().toISOString(),
   };
+
+  try {
+    const res = await fetch('/api/donations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      const created = await res.json();
+      notifyLocalUpdate('donation', created);
+      return created as Donation;
+    }
+  } catch (err) {
+    console.warn('API insert donation exception:', err);
+  }
 
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
         .from('doacoes')
-        .insert([
-          {
-            valor: newDonation.valor,
-            doador: newDonation.doador,
-            descricao: newDonation.descricao,
-            status: newDonation.status,
-            created_at: newDonation.created_at,
-          },
-        ])
+        .insert([{ ...payload, created_at: new Date().toISOString() }])
         .select()
         .single();
 
@@ -135,13 +156,17 @@ export async function insertDonation(donation: Omit<Donation, 'id' | 'created_at
         notifyLocalUpdate('donation', data);
         return data as Donation;
       }
-      console.error('Supabase insert error:', error);
     } catch (err) {
       console.error('Supabase insert exception:', err);
     }
   }
 
-  // LocalStorage Fallback
+  const newDonation: Donation = {
+    id: `don-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    ...payload,
+    created_at: new Date().toISOString(),
+  };
+
   const existing = await fetchDonations();
   const updated = [newDonation, ...existing];
   localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify(updated));
@@ -150,6 +175,21 @@ export async function insertDonation(donation: Omit<Donation, 'id' | 'created_at
 }
 
 export async function updateDonation(id: string, updates: Partial<Omit<Donation, 'id'>>): Promise<Donation | null> {
+  try {
+    const res = await fetch(`/api/donations/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      notifyLocalUpdate('donation', updated);
+      return updated as Donation;
+    }
+  } catch (err) {
+    console.warn('API update donation exception:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -166,13 +206,11 @@ export async function updateDonation(id: string, updates: Partial<Omit<Donation,
         notifyLocalUpdate('donation', data);
         return data as Donation;
       }
-      console.error('Supabase update error:', error);
     } catch (err) {
       console.error('Supabase update exception:', err);
     }
   }
 
-  // LocalStorage Fallback
   const existing = await fetchDonations();
   const index = existing.findIndex((d) => d.id === id);
   if (index === -1) return null;
@@ -190,6 +228,16 @@ export async function updateDonation(id: string, updates: Partial<Omit<Donation,
 }
 
 export async function deleteDonation(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/donations/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      notifyLocalUpdate('donation', { id, deleted: true });
+      return true;
+    }
+  } catch (err) {
+    console.warn('API delete donation exception:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { error } = await supabase
@@ -201,13 +249,11 @@ export async function deleteDonation(id: string): Promise<boolean> {
         notifyLocalUpdate('donation', { id, deleted: true });
         return true;
       }
-      console.error('Supabase delete error:', error);
     } catch (err) {
-      console.error('Supabase delete exception:', err);
+      console.error('Supabase delete error:', err);
     }
   }
 
-  // LocalStorage Fallback
   const existing = await fetchDonations();
   const filtered = existing.filter((d) => d.id !== id);
   localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify(filtered));
@@ -218,20 +264,28 @@ export async function deleteDonation(id: string): Promise<boolean> {
 // ================= CAMPAIGN CONFIG API =================
 
 export async function fetchCampaignConfig(): Promise<CampaignConfig> {
-  // 1. Always load local storage copy first
+  try {
+    const res = await fetch('/api/config');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        const fullConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...data };
+        localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(fullConfig));
+        return fullConfig as CampaignConfig;
+      }
+    }
+  } catch (err) {
+    console.warn('API fetch config fallback:', err);
+  }
+
   let localConfig: CampaignConfig = DEFAULT_CAMPAIGN_CONFIG;
-  let hasLocal = false;
   const stored = localStorage.getItem(STORAGE_CONFIG_KEY);
   if (stored) {
     try {
       localConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...JSON.parse(stored) };
-      hasLocal = true;
-    } catch (e) {
-      console.error('Error parsing stored config', e);
-    }
+    } catch (e) {}
   }
 
-  // 2. Query Supabase if configured
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -242,48 +296,15 @@ export async function fetchCampaignConfig(): Promise<CampaignConfig> {
 
       if (!error && data) {
         const sbConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...data } as CampaignConfig;
-
-        // If local storage has a newer updated_at timestamp than Supabase, prefer localConfig!
-        if (hasLocal && localConfig.updated_at && sbConfig.updated_at) {
-          const localTime = new Date(localConfig.updated_at).getTime();
-          const sbTime = new Date(sbConfig.updated_at).getTime();
-
-          if (localTime > sbTime) {
-            // Background sync localConfig to Supabase so Supabase gets updated
-            (async () => {
-              try {
-                const { error: syncErr } = await supabase
-                  .from('configuracoes')
-                  .upsert([{ id: data.id || 'default', ...localConfig }], { onConflict: 'id' });
-                if (syncErr) console.warn('Background Supabase config sync note:', syncErr);
-              } catch (e) {
-                console.warn('Background sync exception:', e);
-              }
-            })();
-            return localConfig;
-          }
-        } else if (hasLocal && localConfig.updated_at && !sbConfig.updated_at) {
-          return localConfig;
-        }
-
-        // Supabase is equal or newer
         localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(sbConfig));
         return sbConfig;
-      } else {
-        console.warn('Supabase config fetch fallback:', error);
       }
     } catch (err) {
       console.warn('Supabase config exception:', err);
     }
   }
 
-  // 3. Fallback to LocalStorage or Default
-  if (hasLocal) {
-    return localConfig;
-  }
-
-  localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(DEFAULT_CAMPAIGN_CONFIG));
-  return DEFAULT_CAMPAIGN_CONFIG;
+  return localConfig;
 }
 
 export async function saveCampaignConfig(config: Partial<CampaignConfig>): Promise<CampaignConfig> {
@@ -294,13 +315,27 @@ export async function saveCampaignConfig(config: Partial<CampaignConfig>): Promi
     updated_at: new Date().toISOString(),
   };
 
-  // 1. ALWAYS persist to LocalStorage immediately
   localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(updatedConfig));
 
-  // 2. Attempt to save to Supabase if configured
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updatedConfig),
+    });
+    if (res.ok) {
+      const saved = await res.json();
+      const finalConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...saved } as CampaignConfig;
+      localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(finalConfig));
+      notifyLocalUpdate('config', finalConfig);
+      return finalConfig;
+    }
+  } catch (err) {
+    console.warn('API save config exception:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
-      // Find existing row ID if any
       const { data: existingRow } = await supabase
         .from('configuracoes')
         .select('id')
@@ -309,14 +344,9 @@ export async function saveCampaignConfig(config: Partial<CampaignConfig>): Promi
 
       const targetId = existingRow?.id || 'default';
 
-      const payload = {
-        id: targetId,
-        ...updatedConfig,
-      };
-
       const { data, error } = await supabase
         .from('configuracoes')
-        .upsert([payload], { onConflict: 'id' })
+        .upsert([{ id: targetId, ...updatedConfig }], { onConflict: 'id' })
         .select()
         .single();
 
@@ -325,11 +355,9 @@ export async function saveCampaignConfig(config: Partial<CampaignConfig>): Promi
         localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(finalConfig));
         notifyLocalUpdate('config', finalConfig);
         return finalConfig;
-      } else {
-        console.warn('Supabase config update error (saved locally):', error);
       }
     } catch (err) {
-      console.warn('Supabase config update exception (saved locally):', err);
+      console.warn('Supabase config update exception:', err);
     }
   }
 
@@ -345,7 +373,39 @@ export function subscribeToRealtimeChanges(
 ): () => void {
   const unsubscribers: Array<() => void> = [];
 
-  // 1. Supabase Realtime Channel if configured
+  // 1. Server Polling for Cross-Device / Cross-Browser Sync
+  let lastServerConfigTime = '';
+  let lastServerDonationsHash = '';
+
+  const checkServerUpdates = async () => {
+    try {
+      const res = await fetch('/api/status');
+      if (res.ok) {
+        const statusData = await res.json();
+        const currentConfigTime = statusData.updated_at || '';
+        const currentDonationsCount = statusData.donationsCount;
+
+        if (lastServerConfigTime && currentConfigTime !== lastServerConfigTime) {
+          onConfigChange();
+        }
+        lastServerConfigTime = currentConfigTime;
+
+        const donationsHash = `${currentDonationsCount}-${currentConfigTime}`;
+        if (lastServerDonationsHash && donationsHash !== lastServerDonationsHash) {
+          onDonationChange();
+        }
+        lastServerDonationsHash = donationsHash;
+      }
+    } catch (e) {
+      // ignore network errors
+    }
+  };
+
+  checkServerUpdates();
+  const pollingInterval = setInterval(checkServerUpdates, 3000);
+  unsubscribers.push(() => clearInterval(pollingInterval));
+
+  // 2. Supabase Realtime Channel if configured
   if (isSupabaseConfigured && supabase) {
     const channel = supabase
       .channel('public_realtime_channel')
@@ -355,18 +415,14 @@ export function subscribeToRealtimeChanges(
       .on('postgres_changes', { event: '*', schema: 'public', table: 'configuracoes' }, () => {
         onConfigChange();
       })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('Realtime connected to Supabase');
-        }
-      });
+      .subscribe();
 
     unsubscribers.push(() => {
       supabase.removeChannel(channel);
     });
   }
 
-  // 2. Local fallback listener (BroadcastChannel / Local Events)
+  // 3. Local fallback listener (BroadcastChannel / Local Events)
   const handleLocalEvent = (e: Event) => {
     const customEv = e as CustomEvent<{ type: string }>;
     if (customEv.detail?.type === 'donation') {
