@@ -10,6 +10,7 @@ export const DEFAULT_CAMPAIGN_CONFIG: CampaignConfig = {
   economia_mensal_total: 2500, // R$ 2.500/mês
   valor_kwh: 0.95, // R$ 0.95/kWh
   imagem_igreja: 'default-vector',
+  admin_emails: ['www.ceolin@gmail.com'],
   painel_grid_cols: 10,
   painel_grid_rows: 4,
   painel_roof_top_percent: 28,
@@ -19,33 +20,4 @@ export const DEFAULT_CAMPAIGN_CONFIG: CampaignConfig = {
   painel_roof_perspective_tilt: 8,
 };
 
-export const INITIAL_DEMO_DONATIONS: Donation[] = [
-  {
-    id: 'demo-1',
-    valor: 10000,
-    doador: 'Comunidade Paroquial',
-    descricao: 'Coleta especial de abertura do leilão',
-    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
-  },
-  {
-    id: 'demo-2',
-    valor: 15000,
-    doador: 'Grupo da Terceira Idade & Amigos',
-    descricao: 'Arrematação da Cesta Especial de Doces e Artesanatos',
-    created_at: new Date(Date.now() - 3600000 * 3).toISOString(),
-  },
-  {
-    id: 'demo-3',
-    valor: 7500,
-    doador: 'Mercado São José',
-    descricao: 'Arrematação do Lote 08 - Novilha Nelore',
-    created_at: new Date(Date.now() - 3600000 * 1).toISOString(),
-  },
-  {
-    id: 'demo-4',
-    valor: 5000,
-    doador: 'Família Oliveira',
-    descricao: 'Doação para 2 painéis solares em memória de D. Maria',
-    created_at: new Date(Date.now() - 1800000).toISOString(),
-  },
-];
+export const INITIAL_DEMO_DONATIONS: Donation[] = [];

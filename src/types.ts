@@ -3,6 +3,7 @@ export interface Donation {
   valor: number;
   doador: string;
   descricao?: string;
+  status?: 'pago' | 'aberto';
   created_at: string;
   updated_at?: string;
 }
@@ -17,6 +18,7 @@ export interface CampaignConfig {
   economia_mensal_total: number; // Estimated monthly savings for full system in R$
   valor_kwh: number; // R$ / kWh
   imagem_igreja: string; // URL or preset identifier
+  admin_emails?: string[]; // List of authorized admin emails
   // Visual roof overlay positioning settings
   painel_grid_cols?: number;
   painel_grid_rows?: number;

@@ -2,14 +2,28 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { DEFAULT_CAMPAIGN_CONFIG, INITIAL_DEMO_DONATIONS } from '../data/defaultData';
 import { CampaignConfig, Donation, NewDonationEvent } from '../types';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+function cleanSupabaseUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  let cleaned = rawUrl.trim();
+  // Strip trailing slashes
+  cleaned = cleaned.replace(/\/+$/, '');
+  // Strip subpaths if user appended /auth/v1, /rest/v1, etc.
+  cleaned = cleaned.replace(/\/(auth|rest)\/v\d+.*$/i, '');
+  cleaned = cleaned.replace(/\/+$/, '');
+  return cleaned;
+}
+
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const rawSupabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+export const supabaseUrl = cleanSupabaseUrl(rawSupabaseUrl);
+export const supabaseAnonKey = rawSupabaseAnonKey.trim();
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
   supabaseAnonKey &&
   !supabaseUrl.includes('your-supabase-project') &&
-  supabaseUrl.startsWith('https://')
+  (supabaseUrl.startsWith('https://') || supabaseUrl.startsWith('http://'))
 );
 
 export const supabase: SupabaseClient | null = isSupabaseConfigured
@@ -24,9 +38,17 @@ const broadcastChannel = typeof window !== 'undefined' && 'BroadcastChannel' in 
 
 const localEventEmitter = new EventTarget();
 
+export const DEFAULT_ADMIN_EMAIL = 'www.ceolin@gmail.com';
+
 // LocalStorage Keys
 const STORAGE_DONATIONS_KEY = 'paineis_luz_doacoes_v2';
 const STORAGE_CONFIG_KEY = 'paineis_luz_config_v2';
+
+// Helper to clear local test/demo donations
+export function clearLocalDemoDonations(): void {
+  localStorage.setItem(STORAGE_DONATIONS_KEY, JSON.stringify([]));
+  notifyLocalUpdate('donation', { cleared: true });
+}
 
 // Helper to notify local listeners
 function notifyLocalUpdate(eventType: 'donation' | 'config', data?: unknown) {
@@ -89,6 +111,7 @@ export async function insertDonation(donation: Omit<Donation, 'id' | 'created_at
     valor: Number(donation.valor),
     doador: donation.doador.trim(),
     descricao: donation.descricao?.trim() || '',
+    status: donation.status || 'pago',
     created_at: new Date().toISOString(),
   };
 
@@ -101,6 +124,7 @@ export async function insertDonation(donation: Omit<Donation, 'id' | 'created_at
             valor: newDonation.valor,
             doador: newDonation.doador,
             descricao: newDonation.descricao,
+            status: newDonation.status,
             created_at: newDonation.created_at,
           },
         ])
@@ -194,6 +218,20 @@ export async function deleteDonation(id: string): Promise<boolean> {
 // ================= CAMPAIGN CONFIG API =================
 
 export async function fetchCampaignConfig(): Promise<CampaignConfig> {
+  // 1. Always load local storage copy first
+  let localConfig: CampaignConfig = DEFAULT_CAMPAIGN_CONFIG;
+  let hasLocal = false;
+  const stored = localStorage.getItem(STORAGE_CONFIG_KEY);
+  if (stored) {
+    try {
+      localConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...JSON.parse(stored) };
+      hasLocal = true;
+    } catch (e) {
+      console.error('Error parsing stored config', e);
+    }
+  }
+
+  // 2. Query Supabase if configured
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -203,22 +241,45 @@ export async function fetchCampaignConfig(): Promise<CampaignConfig> {
         .maybeSingle();
 
       if (!error && data) {
-        return { ...DEFAULT_CAMPAIGN_CONFIG, ...data } as CampaignConfig;
+        const sbConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...data } as CampaignConfig;
+
+        // If local storage has a newer updated_at timestamp than Supabase, prefer localConfig!
+        if (hasLocal && localConfig.updated_at && sbConfig.updated_at) {
+          const localTime = new Date(localConfig.updated_at).getTime();
+          const sbTime = new Date(sbConfig.updated_at).getTime();
+
+          if (localTime > sbTime) {
+            // Background sync localConfig to Supabase so Supabase gets updated
+            (async () => {
+              try {
+                const { error: syncErr } = await supabase
+                  .from('configuracoes')
+                  .upsert([{ id: data.id || 'default', ...localConfig }], { onConflict: 'id' });
+                if (syncErr) console.warn('Background Supabase config sync note:', syncErr);
+              } catch (e) {
+                console.warn('Background sync exception:', e);
+              }
+            })();
+            return localConfig;
+          }
+        } else if (hasLocal && localConfig.updated_at && !sbConfig.updated_at) {
+          return localConfig;
+        }
+
+        // Supabase is equal or newer
+        localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(sbConfig));
+        return sbConfig;
+      } else {
+        console.warn('Supabase config fetch fallback:', error);
       }
-      console.warn('Supabase config fetch fallback:', error);
     } catch (err) {
       console.warn('Supabase config exception:', err);
     }
   }
 
-  // Fallback to LocalStorage
-  const stored = localStorage.getItem(STORAGE_CONFIG_KEY);
-  if (stored) {
-    try {
-      return { ...DEFAULT_CAMPAIGN_CONFIG, ...JSON.parse(stored) };
-    } catch (e) {
-      console.error('Error parsing stored config', e);
-    }
+  // 3. Fallback to LocalStorage or Default
+  if (hasLocal) {
+    return localConfig;
   }
 
   localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(DEFAULT_CAMPAIGN_CONFIG));
@@ -233,26 +294,45 @@ export async function saveCampaignConfig(config: Partial<CampaignConfig>): Promi
     updated_at: new Date().toISOString(),
   };
 
+  // 1. ALWAYS persist to LocalStorage immediately
+  localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(updatedConfig));
+
+  // 2. Attempt to save to Supabase if configured
   if (isSupabaseConfigured && supabase) {
     try {
+      // Find existing row ID if any
+      const { data: existingRow } = await supabase
+        .from('configuracoes')
+        .select('id')
+        .limit(1)
+        .maybeSingle();
+
+      const targetId = existingRow?.id || 'default';
+
+      const payload = {
+        id: targetId,
+        ...updatedConfig,
+      };
+
       const { data, error } = await supabase
         .from('configuracoes')
-        .upsert([{ id: 'default', ...updatedConfig }])
+        .upsert([payload], { onConflict: 'id' })
         .select()
         .single();
 
       if (!error && data) {
-        notifyLocalUpdate('config', data);
-        return { ...DEFAULT_CAMPAIGN_CONFIG, ...data } as CampaignConfig;
+        const finalConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...updatedConfig, ...data } as CampaignConfig;
+        localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(finalConfig));
+        notifyLocalUpdate('config', finalConfig);
+        return finalConfig;
+      } else {
+        console.warn('Supabase config update error (saved locally):', error);
       }
-      console.error('Supabase config update error:', error);
     } catch (err) {
-      console.error('Supabase config update exception:', err);
+      console.warn('Supabase config update exception (saved locally):', err);
     }
   }
 
-  // LocalStorage Fallback
-  localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(updatedConfig));
   notifyLocalUpdate('config', updatedConfig);
   return updatedConfig;
 }
@@ -306,20 +386,65 @@ export function subscribeToRealtimeChanges(
   };
 }
 
-// Helper SQL Schema Generator string for Admin Modal
-export const SUPABASE_SQL_SCHEMA = `-- Copie e cole este SQL no SQL Editor do seu projeto Supabase:
+// ================= SUPABASE AUTHENTICATION =================
 
--- 1. Tabela de doações
-CREATE TABLE IF NOT EXISTS public.doacoes (
+export async function signInWithSupabase(email: string, password: string) {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: new Error('Supabase não configurado') };
+  }
+  try {
+    return await supabase.auth.signInWithPassword({ email, password });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { data: null, error: new Error(`Erro no Supabase Auth: ${message}`) };
+  }
+}
+
+export async function signUpWithSupabase(email: string, password: string) {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: new Error('Supabase não configurado') };
+  }
+  try {
+    return await supabase.auth.signUp({ email, password });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { data: null, error: new Error(`Erro no Supabase Auth: ${message}`) };
+  }
+}
+
+export async function signOutSupabase() {
+  if (!isSupabaseConfigured || !supabase) return;
+  return await supabase.auth.signOut();
+}
+
+export async function getSupabaseUser() {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const { data } = await supabase.auth.getUser();
+  return data?.user || null;
+}
+
+// Helper SQL Schema Generator string for Admin Modal & SQL Editor
+export const SUPABASE_SQL_SCHEMA = `-- ============================================================
+-- SCRIPT SQL PARA O SUPABASE (COPIAR E COLAR NO SQL EDITOR DO SUPABASE)
+-- Campanha Solar Leilão Beneficente
+-- Administrador Oficial: www.ceolin@gmail.com
+-- ============================================================
+
+-- 1. Limpa doações de teste/fictícias caso existam
+DROP TABLE IF EXISTS public.doacoes CASCADE;
+
+-- 2. Cria a tabela oficial de doações reais do leilão
+CREATE TABLE public.doacoes (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  valor NUMERIC(12, 2) NOT NULL,
+  valor NUMERIC(12, 2) NOT NULL CHECK (valor > 0),
   doador TEXT NOT NULL,
-  descricao TEXT,
+  descricao TEXT DEFAULT '',
+  status TEXT DEFAULT 'pago',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Tabela de configurações da campanha
+-- 3. Cria a tabela de configurações da campanha solar
 CREATE TABLE IF NOT EXISTS public.configuracoes (
   id TEXT PRIMARY KEY DEFAULT 'default',
   nome_campanha TEXT NOT NULL DEFAULT 'Campanha Luz e Esperança',
@@ -340,30 +465,48 @@ CREATE TABLE IF NOT EXISTS public.configuracoes (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Habilitar Row Level Security (RLS)
-ALTER TABLE public.doacoes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.configuracoes ENABLE ROW LEVEL SECURITY;
-
--- 4. Políticas de Leitura Pública (Telão e Painel)
-CREATE POLICY "Permitir leitura pública em doacoes" ON public.doacoes
-  FOR SELECT USING (true);
-
-CREATE POLICY "Permitir leitura pública em configuracoes" ON public.configuracoes
-  FOR SELECT USING (true);
-
--- 5. Políticas de Escrita (Anônima/Pública para leilão ou restrita)
-CREATE POLICY "Permitir escrita de doações" ON public.doacoes
-  FOR ALL USING (true) WITH CHECK (true);
-
-CREATE POLICY "Permitir escrita de configuracoes" ON public.configuracoes
-  FOR ALL USING (true) WITH CHECK (true);
-
--- 6. Habilitar Supabase Realtime nas tabelas
-ALTER PUBLICATION supabase_realtime ADD TABLE public.doacoes;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.configuracoes;
-
--- Insere configuração padrão se não existir
+-- 4. Inserir configuração padrão inicial (caso não exista)
 INSERT INTO public.configuracoes (id, nome_campanha, nome_igreja, meta_total, quantidade_paineis)
 VALUES ('default', 'Campanha Luz e Esperança', 'Igreja Matriz de São José', 100000.00, 40)
 ON CONFLICT (id) DO NOTHING;
+
+-- 5. Habilitar RLS (Row Level Security)
+ALTER TABLE public.doacoes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.configuracoes ENABLE ROW LEVEL SECURITY;
+
+-- 6. Remover políticas antigas se existirem
+DROP POLICY IF EXISTS "Permitir leitura publica de doacoes" ON public.doacoes;
+DROP POLICY IF EXISTS "Permitir escrita de doacoes" ON public.doacoes;
+DROP POLICY IF EXISTS "Permitir leitura publica de configuracoes" ON public.configuracoes;
+DROP POLICY IF EXISTS "Permitir escrita de configuracoes" ON public.configuracoes;
+
+-- 7. Criar Políticas de Acesso Público e Transmissão do Leilão
+CREATE POLICY "Permitir leitura publica de doacoes" ON public.doacoes FOR SELECT USING (true);
+CREATE POLICY "Permitir escrita de doacoes" ON public.doacoes FOR ALL USING (true) WITH CHECK (true);
+
+CREATE POLICY "Permitir leitura publica de configuracoes" ON public.configuracoes FOR SELECT USING (true);
+CREATE POLICY "Permitir escrita de configuracoes" ON public.configuracoes FOR ALL USING (true) WITH CHECK (true);
+
+-- 8. Habilitar Supabase Realtime para sincronização instantânea no Telão
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'doacoes'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.doacoes;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'configuracoes'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.configuracoes;
+  END IF;
+END $$;
+
+-- ============================================================
+-- SCRIPT CONCLUÍDO! O banco está pronto para receber doações reais do leilão.
+-- Administrador: www.ceolin@gmail.com
+-- ============================================================
 `;

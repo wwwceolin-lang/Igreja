@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { CampaignConfig, Donation } from '../types';
 import { calculateCampaignStats } from '../lib/calcStats';
 import { formatCurrency, formatDateBR } from '../lib/formatters';
+import { exportDonationsToCSV } from '../lib/exportCsv';
 
 interface AdminDashboardViewProps {
   config: CampaignConfig;
   donations: Donation[];
   onAddDonation: (donation: Omit<Donation, 'id' | 'created_at'>) => Promise<void>;
+  onUpdateDonation?: (id: string, updates: Partial<Omit<Donation, 'id'>>) => Promise<void>;
   onDeleteDonation: (id: string) => Promise<void>;
   onNavigate: (path: string) => void;
 }
@@ -15,12 +17,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   config,
   donations,
   onAddDonation,
+  onUpdateDonation,
   onDeleteDonation,
   onNavigate,
 }) => {
   const [valor, setValor] = useState('');
   const [doador, setDoador] = useState('');
   const [descricao, setDescricao] = useState('');
+  const [status, setStatus] = useState<'pago' | 'aberto'>('pago');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -50,12 +54,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         valor: numericValue,
         doador: doador.trim(),
         descricao: descricao.trim(),
+        status: status,
       });
 
-      setSuccessMessage(`✅ Doação de ${formatCurrency(numericValue)} de "${doador}" enviada ao Telão com sucesso!`);
+      const statusText = status === 'pago' ? 'Pago' : 'Em Aberto';
+      setSuccessMessage(`✅ Doação de ${formatCurrency(numericValue)} (${statusText}) de "${doador}" enviada ao Telão com sucesso!`);
       setValor('');
       setDoador('');
       setDescricao('');
+      setStatus('pago');
 
       setTimeout(() => setSuccessMessage(''), 5000);
     } catch (err) {
@@ -74,6 +81,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
+  const handleToggleStatus = async (donation: Donation) => {
+    if (!onUpdateDonation) return;
+    const newStatus = donation.status === 'aberto' ? 'pago' : 'aberto';
+    await onUpdateDonation(donation.id, { status: newStatus });
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 text-white space-y-8">
       
@@ -87,6 +100,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-3">
           <button
+            onClick={() => exportDonationsToCSV(donations)}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition-colors shadow-md flex items-center gap-1.5"
+          >
+            <span>📥</span>
+            <span>Exportar CSV / Excel</span>
+          </button>
+          <button
             onClick={() => onNavigate('/admin/doacoes')}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl text-xs font-bold transition-colors border border-slate-700"
           >
@@ -96,7 +116,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             onClick={() => onNavigate('/admin/configuracoes')}
             className="bg-amber-500 hover:bg-amber-400 text-slate-950 px-4 py-2 rounded-xl text-xs font-bold transition-colors shadow-md"
           >
-            ⚙️ Configurações da Campanha
+            ⚙️ Configurações
           </button>
         </div>
       </div>
@@ -210,6 +230,40 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </div>
             </div>
 
+            {/* Status Selection */}
+            <div>
+              <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-300 mb-2">
+                Status do Pagamento *
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setStatus('pago')}
+                  className={`p-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                    status === 'pago'
+                      ? 'bg-emerald-600 border-emerald-400 text-white shadow-lg'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <span>🟢</span>
+                  <span>Pago (Confirmado)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStatus('aberto')}
+                  className={`p-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                    status === 'aberto'
+                      ? 'bg-amber-500 border-amber-300 text-slate-950 shadow-lg'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <span>🟠</span>
+                  <span>Em Aberto (Pendente)</span>
+                </button>
+              </div>
+            </div>
+
             <div>
               <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-300 mb-2">
                 Nome do Doador ou Empresa *
@@ -254,35 +308,61 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             <span className="text-xs text-amber-400 font-bold">{donations.length} total</span>
           </div>
 
-          <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
+          <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
             {donations.length === 0 ? (
               <div className="text-center py-12 text-slate-500 text-xs">
                 Nenhuma doação cadastrada ainda.
               </div>
             ) : (
-              donations.slice(0, 8).map((d) => (
-                <div
-                  key={d.id}
-                  className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3 group hover:border-slate-700 transition-colors"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="font-bold text-white text-sm truncate">{d.doador}</div>
-                    {d.descricao && <div className="text-xs text-slate-400 truncate">{d.descricao}</div>}
-                    <div className="text-[10px] text-slate-500 mt-1">{formatDateBR(d.created_at)}</div>
-                  </div>
+              donations.slice(0, 8).map((d) => {
+                const isPaid = d.status !== 'aberto';
+                return (
+                  <div
+                    key={d.id}
+                    className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3 group hover:border-slate-700 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white text-sm truncate">{d.doador}</span>
+                        {/* Status Badge Toggle */}
+                        {onUpdateDonation ? (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleStatus(d)}
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border transition-colors ${
+                              isPaid
+                                ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900'
+                                : 'bg-amber-950/80 text-amber-300 border-amber-500/40 hover:bg-amber-900'
+                            }`}
+                            title="Clique para alternar o status entre Pago e Aberto"
+                          >
+                            {isPaid ? '🟢 Pago' : '🟠 Aberto'}
+                          </button>
+                        ) : (
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            isPaid ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30' : 'bg-amber-950 text-amber-300 border border-amber-500/30'
+                          }`}>
+                            {isPaid ? '🟢 Pago' : '🟠 Aberto'}
+                          </span>
+                        )}
+                      </div>
+                      {d.descricao && <div className="text-xs text-slate-400 truncate">{d.descricao}</div>}
+                      <div className="text-[10px] text-slate-500">{formatDateBR(d.created_at)}</div>
+                    </div>
 
-                  <div className="text-right">
-                    <div className="font-black text-amber-300 text-base">{formatCurrency(d.valor)}</div>
-                    <button
-                      onClick={() => handleDeleteConfirm(d.id)}
-                      disabled={deletingId === d.id}
-                      className="text-[10px] text-rose-400 hover:text-rose-300 font-bold mt-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      Excluir
-                    </button>
+                    <div className="text-right">
+                      <div className="font-black text-amber-300 text-base">{formatCurrency(d.valor)}</div>
+                      <button
+                        onClick={() => handleDeleteConfirm(d.id)}
+                        disabled={deletingId === d.id}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 font-bold mt-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        Excluir
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Donation } from '../types';
 import { formatCurrency, formatDateBR } from '../lib/formatters';
+import { exportDonationsToCSV } from '../lib/exportCsv';
 
 interface AdminDonationsViewProps {
   donations: Donation[];
@@ -16,6 +17,7 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
   onDeleteDonation,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'todos' | 'pago' | 'aberto'>('todos');
   const [editingDonation, setEditingDonation] = useState<Donation | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
 
@@ -23,13 +25,20 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
   const [valor, setValor] = useState('');
   const [doador, setDoador] = useState('');
   const [descricao, setDescricao] = useState('');
+  const [status, setStatus] = useState<'pago' | 'aberto'>('pago');
 
   // Filtered donations
-  const filteredDonations = donations.filter(
-    (d) =>
+  const filteredDonations = donations.filter((d) => {
+    const matchesSearch =
       d.doador.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (d.descricao && d.descricao.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+      (d.descricao && d.descricao.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    if (!matchesSearch) return false;
+
+    if (statusFilter === 'pago') return d.status !== 'aberto';
+    if (statusFilter === 'aberto') return d.status === 'aberto';
+    return true;
+  });
 
   const totalSum = filteredDonations.reduce((acc, d) => acc + (Number(d.valor) || 0), 0);
 
@@ -38,6 +47,7 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
     setValor(String(donation.valor));
     setDoador(donation.doador);
     setDescricao(donation.descricao || '');
+    setStatus(donation.status || 'pago');
   };
 
   const openNewModal = () => {
@@ -45,6 +55,7 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
     setValor('');
     setDoador('');
     setDescricao('');
+    setStatus('pago');
   };
 
   const closeModal = () => {
@@ -53,6 +64,7 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
     setValor('');
     setDoador('');
     setDescricao('');
+    setStatus('pago');
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -68,16 +80,23 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
         valor: numVal,
         doador: doador.trim(),
         descricao: descricao.trim(),
+        status: status,
       });
     } else if (isAddingNew) {
       await onAddDonation({
         valor: numVal,
         doador: doador.trim(),
         descricao: descricao.trim(),
+        status: status,
       });
     }
 
     closeModal();
+  };
+
+  const handleToggleStatus = async (donation: Donation) => {
+    const newStatus = donation.status === 'aberto' ? 'pago' : 'aberto';
+    await onUpdateDonation(donation.id, { status: newStatus });
   };
 
   const handleDelete = async (id: string, doadorName: string, amount: number) => {
@@ -97,29 +116,53 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
         <div>
           <h1 className="text-2xl font-black text-white">Histórico e Gerenciamento de Doações</h1>
           <p className="text-xs text-slate-400">
-            Cadastre, edite ou exclua doações do leilão. O valor total é atualizado em tempo real.
+            Cadastre, edite, altere o status (Pago/Aberto) ou exporte os registros do leilão em CSV/Excel.
           </p>
         </div>
 
-        <button
-          onClick={openNewModal}
-          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-5 py-3 rounded-xl text-sm transition-colors shadow-lg flex items-center justify-center gap-2"
-        >
-          <span>➕ Nova Doação</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => exportDonationsToCSV(filteredDonations)}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-3 rounded-xl text-xs transition-colors shadow-lg flex items-center justify-center gap-2"
+          >
+            <span>📥</span>
+            <span>Exportar CSV / Excel</span>
+          </button>
+
+          <button
+            onClick={openNewModal}
+            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-5 py-3 rounded-xl text-xs transition-colors shadow-lg flex items-center justify-center gap-2"
+          >
+            <span>➕ Nova Doação</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Stats Row */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
-        <div className="w-full md:w-80 relative">
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Buscar por doador ou descrição..."
-            className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl pl-10 pr-4 py-2.5 text-xs focus:outline-none focus:border-amber-500"
-          />
-          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
+          {/* Search Box */}
+          <div className="w-full sm:w-72 relative">
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Buscar por doador ou descrição..."
+              className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl pl-10 pr-4 py-2.5 text-xs focus:outline-none focus:border-amber-500"
+            />
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
+          </div>
+
+          {/* Status Filter Selector */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as 'todos' | 'pago' | 'aberto')}
+            className="w-full sm:w-auto bg-slate-950 border border-slate-800 text-white font-bold rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-amber-500"
+          >
+            <option value="todos">Filter por Status (Todos)</option>
+            <option value="pago">🟢 Apenas Pagos</option>
+            <option value="aberto">🟠 Apenas Em Aberto</option>
+          </select>
         </div>
 
         <div className="flex items-center gap-4 text-xs font-bold">
@@ -140,7 +183,8 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
               <tr>
                 <th className="p-4">Data / Hora</th>
                 <th className="p-4">Doador / Empresa</th>
-                <th className="p-4">Descrição</th>
+                <th className="p-4">Descrição / Lote</th>
+                <th className="p-4">Status</th>
                 <th className="p-4">Valor (R$)</th>
                 <th className="p-4 text-right">Ações</th>
               </tr>
@@ -148,33 +192,50 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
             <tbody className="divide-y divide-slate-800/60 font-medium">
               {filteredDonations.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="p-8 text-center text-slate-500 italic">
-                    Nenhuma doação encontrada.
+                  <td colSpan={6} className="p-8 text-center text-slate-500 italic">
+                    Nenhuma doação encontrada para os filtros selecionados.
                   </td>
                 </tr>
               ) : (
-                filteredDonations.map((d) => (
-                  <tr key={d.id} className="hover:bg-slate-850 transition-colors">
-                    <td className="p-4 text-slate-400 font-mono">{formatDateBR(d.created_at)}</td>
-                    <td className="p-4 font-bold text-white text-sm">{d.doador}</td>
-                    <td className="p-4 text-slate-300">{d.descricao || '-'}</td>
-                    <td className="p-4 font-black text-amber-300 text-sm">{formatCurrency(d.valor)}</td>
-                    <td className="p-4 text-right space-x-2">
-                      <button
-                        onClick={() => openEditModal(d)}
-                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
-                      >
-                        Editar
-                      </button>
-                      <button
-                        onClick={() => handleDelete(d.id, d.doador, d.valor)}
-                        className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-500/30 transition-colors"
-                      >
-                        Excluir
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                filteredDonations.map((d) => {
+                  const isPaid = d.status !== 'aberto';
+                  return (
+                    <tr key={d.id} className="hover:bg-slate-850 transition-colors">
+                      <td className="p-4 text-slate-400 font-mono">{formatDateBR(d.created_at)}</td>
+                      <td className="p-4 font-bold text-white text-sm">{d.doador}</td>
+                      <td className="p-4 text-slate-300">{d.descricao || '-'}</td>
+                      <td className="p-4">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStatus(d)}
+                          className={`px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider border transition-all ${
+                            isPaid
+                              ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900'
+                              : 'bg-amber-950/80 text-amber-300 border-amber-500/40 hover:bg-amber-900'
+                          }`}
+                          title="Clique para alternar o status (Pago/Aberto)"
+                        >
+                          {isPaid ? '🟢 Pago' : '🟠 Em Aberto'}
+                        </button>
+                      </td>
+                      <td className="p-4 font-black text-amber-300 text-sm">{formatCurrency(d.valor)}</td>
+                      <td className="p-4 text-right space-x-2">
+                        <button
+                          onClick={() => openEditModal(d)}
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          onClick={() => handleDelete(d.id, d.doador, d.valor)}
+                          className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-500/30 transition-colors"
+                        >
+                          Excluir
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -208,6 +269,37 @@ export const AdminDonationsView: React.FC<AdminDonationsViewProps> = ({
                   required
                   className="w-full bg-slate-950 border border-slate-800 text-amber-300 text-xl font-bold rounded-xl px-4 py-2.5 focus:outline-none focus:border-amber-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-300 mb-1.5">
+                  Status do Pagamento *
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setStatus('pago')}
+                    className={`p-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                      status === 'pago'
+                        ? 'bg-emerald-600 border-emerald-400 text-white'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>🟢 Pago</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStatus('aberto')}
+                    className={`p-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                      status === 'aberto'
+                        ? 'bg-amber-500 border-amber-300 text-slate-950'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>🟠 Em Aberto</span>
+                  </button>
+                </div>
               </div>
 
               <div>

@@ -8,6 +8,7 @@ import {
   deleteDonation,
   saveCampaignConfig,
   subscribeToRealtimeChanges,
+  signOutSupabase,
 } from './lib/supabase';
 import { calculateCampaignStats } from './lib/calcStats';
 import { Navbar } from './components/Navbar';
@@ -107,10 +108,19 @@ export default function App() {
     };
   }, [config]);
 
-  // Handle Admin Login
-  const handleLoginSuccess = () => {
+  // Handle Admin Login & Logout
+  const handleLoginSuccess = (emailLoggedIn: string) => {
     setIsAdminAuthenticated(true);
     sessionStorage.setItem('admin_authed', 'true');
+    sessionStorage.setItem('admin_email', emailLoggedIn);
+    navigate('/admin');
+  };
+
+  const handleLogout = async () => {
+    setIsAdminAuthenticated(false);
+    sessionStorage.removeItem('admin_authed');
+    sessionStorage.removeItem('admin_email');
+    await signOutSupabase();
     navigate('/admin');
   };
 
@@ -165,7 +175,12 @@ export default function App() {
   const renderView = () => {
     if (currentPath.startsWith('/admin')) {
       if (!isAdminAuthenticated) {
-        return <AdminLoginView onLoginSuccess={handleLoginSuccess} />;
+        return (
+          <AdminLoginView
+            onLoginSuccess={handleLoginSuccess}
+            allowedEmails={config.admin_emails}
+          />
+        );
       }
       if (currentPath === '/admin/doacoes') {
         return (
@@ -186,6 +201,7 @@ export default function App() {
           config={config}
           donations={donations}
           onAddDonation={handleAddDonation}
+          onUpdateDonation={handleUpdateDonation}
           onDeleteDonation={handleDeleteDonation}
           onNavigate={navigate}
         />
@@ -216,6 +232,7 @@ export default function App() {
           onNavigate={navigate}
           isAdminAuthenticated={isAdminAuthenticated}
           onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+          onLogout={handleLogout}
         />
       )}
 

@@ -6,6 +6,7 @@ interface NavbarProps {
   onNavigate: (path: string) => void;
   isAdminAuthenticated: boolean;
   onOpenSupabaseModal: () => void;
+  onLogout?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -13,6 +14,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   isAdminAuthenticated,
   onOpenSupabaseModal,
+  onLogout,
 }) => {
   const isTelao = currentPath === '/' || currentPath === '/telao';
 
@@ -120,6 +122,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {isSupabaseConfigured ? 'Supabase Realtime' : 'Modo Demo / Local'}
               </span>
             </button>
+
+            {/* Logout Button */}
+            {isAdminAuthenticated && onLogout && (
+              <button
+                onClick={onLogout}
+                className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-500/30 text-xs font-bold transition-colors flex items-center gap-1"
+                title="Sair do Painel Administrativo"
+              >
+                <span>🚪</span>
+                <span className="hidden sm:inline">Sair</span>
+              </button>
+            )}
 
             {/* Fullscreen Button */}
             {isTelao && (
