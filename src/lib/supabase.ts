@@ -308,7 +308,14 @@ export async function fetchCampaignConfig(): Promise<CampaignConfig> {
 }
 
 export async function saveCampaignConfig(config: Partial<CampaignConfig>): Promise<CampaignConfig> {
-  const currentConfig = await fetchCampaignConfig();
+  let currentConfig: CampaignConfig = DEFAULT_CAMPAIGN_CONFIG;
+  const stored = localStorage.getItem(STORAGE_CONFIG_KEY);
+  if (stored) {
+    try {
+      currentConfig = { ...DEFAULT_CAMPAIGN_CONFIG, ...JSON.parse(stored) };
+    } catch (e) {}
+  }
+
   const updatedConfig: CampaignConfig = {
     ...currentConfig,
     ...config,

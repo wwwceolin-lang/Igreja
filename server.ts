@@ -113,10 +113,14 @@ async function syncFromSupabase() {
   try {
     const { data: configData } = await supabase.from('configuracoes').select('*').limit(1).maybeSingle();
     if (configData) {
-      db.config = { ...DEFAULT_CONFIG, ...configData };
+      const sbTime = configData.updated_at ? new Date(configData.updated_at).getTime() : 0;
+      const localTime = db.config?.updated_at ? new Date(db.config.updated_at).getTime() : 0;
+      if (sbTime > localTime) {
+        db.config = { ...DEFAULT_CONFIG, ...configData };
+      }
     }
     const { data: donationsData } = await supabase.from('doacoes').select('*').order('created_at', { ascending: false });
-    if (donationsData) {
+    if (donationsData && donationsData.length > 0) {
       db.donations = donationsData;
     }
     saveServerDB(db);
@@ -143,8 +147,21 @@ app.get('/api/config', async (req, res) => {
     try {
       const { data, error } = await supabase.from('configuracoes').select('*').limit(1).maybeSingle();
       if (!error && data) {
-        db.config = { ...DEFAULT_CONFIG, ...data };
-        saveServerDB(db);
+        const sbTime = data.updated_at ? new Date(data.updated_at).getTime() : 0;
+        const localTime = db.config?.updated_at ? new Date(db.config.updated_at).getTime() : 0;
+
+        // ONLY replace db.config if Supabase data has a strictly NEWER updated_at timestamp!
+        if (sbTime > localTime) {
+          db.config = { ...DEFAULT_CONFIG, ...data };
+          saveServerDB(db);
+        } else if (localTime > sbTime && data.id) {
+          // If server memory is newer, sync server memory back to Supabase
+          (async () => {
+            try {
+              await supabase.from('configuracoes').upsert([{ id: data.id, ...db.config }], { onConflict: 'id' });
+            } catch (e) {}
+          })();
+        }
       }
     } catch (e) {
       console.warn('Supabase config fetch error, using local file DB:', e);
@@ -164,7 +181,9 @@ app.post('/api/config', async (req, res) => {
 
   if (supabase && isSupabaseConfigured) {
     try {
-      await supabase.from('configuracoes').upsert([{ id: 'default', ...newConfig }], { onConflict: 'id' });
+      const { data: existingRow } = await supabase.from('configuracoes').select('id').limit(1).maybeSingle();
+      const targetId = existingRow?.id || 'default';
+      await supabase.from('configuracoes').upsert([{ id: targetId, ...newConfig }], { onConflict: 'id' });
     } catch (e) {
       console.warn('Supabase config update warning:', e);
     }
